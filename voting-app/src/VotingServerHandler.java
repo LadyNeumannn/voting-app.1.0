@@ -1,4 +1,3 @@
-// VotingServerHandler.java
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import java.util.*;
@@ -134,7 +133,7 @@ public class VotingServerHandler extends SimpleChannelInboundHandler<Object> {
         }
     }
 
-    // Обработчик команды vote
+  
     private void handleVote(ChannelHandlerContext ctx, Message message) {
         if (!userSessions.containsKey(ctx)) {
             ctx.writeAndFlush("Ошибка: необходимо выполнить login");
