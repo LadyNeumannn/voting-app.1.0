@@ -1,104 +1,134 @@
+import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.embedded.EmbeddedChannel;
 
-import static org.mockito.Mockito.*;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class VotingServerHandlerTest {
+public class VotingServerHandlerTest {
+
     private VotingServerHandler handler;
-    private ChannelHandlerContext ctx;
     private EmbeddedChannel channel;
 
     @BeforeEach
     void setUp() {
         handler = new VotingServerHandler();
-        ctx = mock(ChannelHandlerContext.class);
         channel = new EmbeddedChannel(handler);
     }
 
+    private void loginAs(String username) {
+        Message loginMsg = new Message("login", Map.of("username", username), null);
+        channel.writeInbound(loginMsg);
+        channel.readOutbound(); 
+    }
+
+    private void createVote(String topic, String voteName) {
+        loginAs("user1");
+        Message msg = new Message("create_vote",
+                Map.of("topic", topic, "vote_name", voteName, "description", "description"),
+                List.of("Option1", "Option2"));
+        channel.writeInbound(msg);
+        channel.readOutbound(); 
+    }
+
     @Test
-    void testLogin() {
+    void testLoginSuccess() {
         Message message = new Message("login", Map.of("username", "user1"), null);
+        channel.writeInbound(message);
 
-        handler.channelRead0(ctx, message);
-
-        assertTrue(channel.outboundMessages().contains("Пользователь \"user1\" вошел в систему"));
+        Object response = channel.readOutbound();
+        assertEquals("Пользователь \"user1\" вошел в систему", response);
     }
 
     @Test
-    void testLoginWithMissingUsername() {
+    void testLoginMissingUsername() {
         Message message = new Message("login", Map.of(), null);
+        channel.writeInbound(message);
 
-        handler.channelRead0(ctx, message);
-
-        assertTrue(channel.outboundMessages().contains("Ошибка: имя пользователя не указано"));
+        Object response = channel.readOutbound();
+        assertEquals("Ошибка: имя пользователя не указано", response);
     }
-}
-@Test
-void testCreateVote() {
 
-    Message message = new Message("create_vote", Map.of("topic", "topic1", "vote_name", "vote1", "description", "vote description"), List.of("Option1", "Option2"));
+    @Test
+    void testCreateVoteSuccess() {
+        loginAs("user1");
 
-    handler.channelRead0(ctx, message);
+        Message message = new Message("create_vote",
+                Map.of("topic", "topic1", "vote_name", "vote1", "description", "desc"),
+                List.of("Option1", "Option2"));
+        channel.writeInbound(message);
 
-    assertTrue(channel.outboundMessages().contains("Голосование \"vote1\" успешно создано в разделе \"topic1\""));
-}
+        Object response = channel.readOutbound();
+        assertEquals("Голосование \"vote1\" успешно создано в разделе \"topic1\"", response);
+    }
 
-@Test
-void testCreateVoteWithMissingParameters() {
+    @Test
+    void testCreateVoteMissingOptions() {
+        loginAs("user1");
 
-    Message message = new Message("create_vote", Map.of("topic", "topic1", "vote_name", "vote1"), null);
+        Message message = new Message("create_vote",
+                Map.of("topic", "topic1", "vote_name", "vote1"), null);
+        channel.writeInbound(message);
 
-    handler.channelRead0(ctx, message);
+        Object response = channel.readOutbound();
+        assertEquals("Ошибка: недостаточно параметров для создания голосования", response);
+    }
 
-    assertTrue(channel.outboundMessages().contains("Ошибка: недостаточно параметров для создания голосования"));
-}
-@Test
-void testVote() {
+    @Test
+    void testVoteSuccess() {
+        createVote("topic1", "vote1");
 
-    handler.handleCreateVote(ctx, new Message("create_vote", Map.of("topic", "topic1", "vote_name", "vote1", "description", "description"), List.of("Option1", "Option2")));
+        Message voteMsg = new Message("vote",
+                Map.of("topic", "topic1", "vote", "vote1", "option", "Option1"),
+                null);
+        channel.writeInbound(voteMsg);
 
+        Object response = channel.readOutbound();
+        assertEquals("Ваш голос принят: Option1", response);
+    }
 
-    Message message = new Message("vote", Map.of("topic", "topic1", "vote", "vote1", "option", "Option1"), null);
-    handler.channelRead0(ctx, message);
+    @Test
+    void testVoteAlreadyVoted() {
+        createVote("topic1", "vote1");
 
-    assertTrue(channel.outboundMessages().contains("Ваш голос принят: Option1"));
-}
+        Message vote1 = new Message("vote",
+                Map.of("topic", "topic1", "vote", "vote1", "option", "Option1"),
+                null);
+        channel.writeInbound(vote1);
+        channel.readOutbound(); 
 
-@Test
-void testVoteWithAlreadyVotedUser() {
+        Message vote2 = new Message("vote",
+                Map.of("topic", "topic1", "vote", "vote1", "option", "Option1"),
+                null);
+        channel.writeInbound(vote2);
 
-    handler.handleCreateVote(ctx, new Message("create_vote", Map.of("topic", "topic1", "vote_name", "vote1", "description", "description"), List.of("Option1", "Option2")));
+        Object response = channel.readOutbound();
+        assertEquals("Ошибка: вы уже проголосовали в этом голосовании", response);
+    }
 
+    @Test
+    void testDeleteVoteSuccess() {
+        createVote("topic1", "vote1");
 
-    handler.handleVote(ctx, new Message("vote", Map.of("topic", "topic1", "vote", "vote1", "option", "Option1"), null));
+        Message deleteMsg = new Message("delete",
+                Map.of("topic", "topic1", "vote", "vote1"), null);
+        channel.writeInbound(deleteMsg);
 
+        Object response = channel.readOutbound();
+        assertEquals("Голосование \"vote1\" успешно удалено из раздела \"topic1\"", response);
+    }
 
-    Message message = new Message("vote", Map.of("topic", "topic1", "vote", "vote1", "option", "Option1"), null);
-    handler.channelRead0(ctx, message);
+    @Test
+    void testDeleteVoteNotFound() {
+        loginAs("user1");
 
-    assertTrue(channel.outboundMessages().contains("Ошибка: вы уже проголосовали в этом голосовании"));
-}
-@Test
-void testDeleteVote() {
+        Message deleteMsg = new Message("delete",
+                Map.of("topic", "topic1", "vote", "vote1"), null);
+        channel.writeInbound(deleteMsg);
 
-    handler.handleCreateVote(ctx, new Message("create_vote", Map.of("topic", "topic1", "vote_name", "vote1", "description", "description"), List.of("Option1", "Option2")));
-
-
-    Message message = new Message("delete", Map.of("topic", "topic1", "vote", "vote1"), null);
-    handler.channelRead0(ctx, message);
-
-    assertTrue(channel.outboundMessages().contains("Голосование \"vote1\" успешно удалено из раздела \"topic1\""));
-}
-
-@Test
-void testDeleteVoteWithNonExistentVote() {
-
-    Message message = new Message("delete", Map.of("topic", "topic1", "vote", "vote1"), null);
-    handler.channelRead0(ctx, message);
-
-    assertTrue(channel.outboundMessages().contains("Ошибка: голосование \"vote1\" не найдено в разделе \"topic1\""));
+        Object response = channel.readOutbound();
+        assertEquals("Ошибка: голосование \"vote1\" не найдено в разделе \"topic1\"", response);
+    }
 }
