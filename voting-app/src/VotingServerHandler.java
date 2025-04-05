@@ -1,5 +1,6 @@
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import java.io.*;
 import java.util.*;
 import java.util.logging.Logger;
 
@@ -7,11 +8,11 @@ public class VotingServerHandler extends SimpleChannelInboundHandler<Object> {
     private static final Map<ChannelHandlerContext, String> userSessions = new HashMap<>();
     private static final Set<String> loggedInUsers = new HashSet<>();
     private static final Map<String, List<String>> topics = new HashMap<>();
-    private static final Map<String, Map<String, Integer>> votesMap = new HashMap<>(); // Голоса для голосования
+    private static final Map<String, Map<String, Integer>> votesMap = new HashMap<>();
     private static final Logger logger = LoggerUtil.getLogger(VotingServerHandler.class.getName());
 
     @Override
-    protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
+    protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
         if (!(msg instanceof Message message)) {
             ctx.writeAndFlush("Ошибка: сообщение должно быть типа Message");
             return;
@@ -25,8 +26,8 @@ public class VotingServerHandler extends SimpleChannelInboundHandler<Object> {
             case "vote" -> handleVote(ctx, message);
             case "view_vote" -> handleViewVote(ctx, message);
             case "delete" -> handleDeleteVote(ctx, message);
-            case "load" -> handleLoad(ctx, message);
             case "save" -> handleSave(ctx, message);
+            case "load" -> handleLoad(ctx, message);
             default -> ctx.writeAndFlush("Неизвестная команда: " + message.type);
         }
     }
@@ -87,7 +88,7 @@ public class VotingServerHandler extends SimpleChannelInboundHandler<Object> {
             StringBuilder sb = new StringBuilder("Список разделов:\n");
             for (var entry : topics.entrySet()) {
                 sb.append("- ").append(entry.getKey())
-                        .append(" (votes in topic=").append(entry.getValue().size()).append(")\n");
+                        .append(" (").append(entry.getValue().size()).append(" голосований)\n");
             }
             logger.info("Просмотр всех разделов");
             ctx.writeAndFlush(sb.toString());
@@ -110,9 +111,16 @@ public class VotingServerHandler extends SimpleChannelInboundHandler<Object> {
             return;
         }
 
-        if (!(payload instanceof List options)) {
+        if (!(payload instanceof List<?> rawOptions)) {
             ctx.writeAndFlush("Ошибка: ожидается список вариантов ответа");
             return;
+        }
+
+        List<String> options = new ArrayList<>();
+        for (Object o : rawOptions) {
+            if (o instanceof String str) {
+                options.add(str);
+            }
         }
 
         synchronized (topics) {
@@ -127,13 +135,16 @@ public class VotingServerHandler extends SimpleChannelInboundHandler<Object> {
             }
 
             topics.get(topic).add(voteName);
-            votesMap.put(voteName, new HashMap<>());
+            Map<String, Integer> voteData = new HashMap<>();
+            for (String option : options) {
+                voteData.put(option, 0);
+            }
+            votesMap.put(voteName, voteData);
             logger.info("Создано новое голосование \"" + voteName + "\" в разделе \"" + topic + "\"");
             ctx.writeAndFlush("Голосование \"" + voteName + "\" успешно создано в разделе \"" + topic + "\"");
         }
     }
 
-  
     private void handleVote(ChannelHandlerContext ctx, Message message) {
         if (!userSessions.containsKey(ctx)) {
             ctx.writeAndFlush("Ошибка: необходимо выполнить login");
@@ -167,16 +178,15 @@ public class VotingServerHandler extends SimpleChannelInboundHandler<Object> {
             }
 
             String chosenOption = message.params.get("option");
-            if (chosenOption == null) {
-                ctx.writeAndFlush("Ошибка: необходимо выбрать вариант ответа");
+            if (chosenOption == null || !votesForVote.containsKey(chosenOption)) {
+                ctx.writeAndFlush("Ошибка: неверный вариант ответа");
                 return;
             }
 
-            votesForVote.put(chosenOption, votesForVote.getOrDefault(chosenOption, 0) + 1);
+            votesForVote.put(chosenOption, votesForVote.get(chosenOption) + 1);
             ctx.writeAndFlush("Ваш голос принят: " + chosenOption);
         }
     }
-
 
     private void handleViewVote(ChannelHandlerContext ctx, Message message) {
         if (!userSessions.containsKey(ctx)) {
@@ -193,12 +203,7 @@ public class VotingServerHandler extends SimpleChannelInboundHandler<Object> {
         }
 
         synchronized (topics) {
-            if (!topics.containsKey(topic)) {
-                ctx.writeAndFlush("Ошибка: раздел \"" + topic + "\" не найден");
-                return;
-            }
-
-            if (!topics.get(topic).contains(voteName)) {
+            if (!topics.containsKey(topic) || !topics.get(topic).contains(voteName)) {
                 ctx.writeAndFlush("Ошибка: голосование \"" + voteName + "\" не найдено в разделе \"" + topic + "\"");
                 return;
             }
@@ -209,14 +214,13 @@ public class VotingServerHandler extends SimpleChannelInboundHandler<Object> {
                 return;
             }
 
-            StringBuilder sb = new StringBuilder("Результаты голосования \"" + voteName + "\" в разделе \"" + topic + "\":\n");
-            for (String option : votesForVote.keySet()) {
-                sb.append(option).append(": ").append(votesForVote.get(option)).append(" голосов\n");
+            StringBuilder sb = new StringBuilder("Результаты голосования \"" + voteName + "\":\n");
+            for (var entry : votesForVote.entrySet()) {
+                sb.append(entry.getKey()).append(": ").append(entry.getValue()).append(" голосов\n");
             }
             ctx.writeAndFlush(sb.toString());
         }
     }
-
 
     private void handleDeleteVote(ChannelHandlerContext ctx, Message message) {
         if (!userSessions.containsKey(ctx)) {
@@ -233,57 +237,54 @@ public class VotingServerHandler extends SimpleChannelInboundHandler<Object> {
         }
 
         synchronized (topics) {
-            if (!topics.containsKey(topic)) {
-                ctx.writeAndFlush("Ошибка: раздел \"" + topic + "\" не найден");
-                return;
-            }
-
-            if (!topics.get(topic).contains(voteName)) {
+            if (!topics.containsKey(topic) || !topics.get(topic).contains(voteName)) {
                 ctx.writeAndFlush("Ошибка: голосование \"" + voteName + "\" не найдено в разделе \"" + topic + "\"");
                 return;
             }
-
 
             topics.get(topic).remove(voteName);
             votesMap.remove(voteName);
             ctx.writeAndFlush("Голосование \"" + voteName + "\" успешно удалено из раздела \"" + topic + "\"");
         }
     }
-}
-private void handleSave(ChannelHandlerContext ctx, Message message) {
-    String filename = message.params.get("filename");
-    if (filename == null || filename.isBlank()) {
-        ctx.writeAndFlush("Ошибка: имя файла не указано");
-        return;
+
+    private void handleSave(ChannelHandlerContext ctx, Message message) {
+        String filename = message.params.get("filename");
+        if (filename == null || filename.isBlank()) {
+            ctx.writeAndFlush("Ошибка: имя файла не указано");
+            return;
+        }
+
+        try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(filename))) {
+            out.writeObject(topics);
+            out.writeObject(votesMap);
+            ctx.writeAndFlush("Данные успешно сохранены в файл: " + filename);
+            logger.info("Данные сохранены в файл: " + filename);
+        } catch (IOException e) {
+            ctx.writeAndFlush("Ошибка при сохранении данных: " + e.getMessage());
+            logger.severe("Ошибка при сохранении данных: " + e.getMessage());
+        }
     }
 
-    try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(filename))) {
-        out.writeObject(topics);
-        out.writeObject(votes);
-        ctx.writeAndFlush("Данные успешно сохранены в файл: " + filename);
-        logger.info("Данные сохранены в файл: " + filename);
-    } catch (IOException e) {
-        ctx.writeAndFlush("Ошибка при сохранении данных: " + e.getMessage());
-        logger.severe("Ошибка при сохранении данных: " + e.getMessage());
-    }
-}
+    private void handleLoad(ChannelHandlerContext ctx, Message message) {
+        String filename = message.params.get("filename");
+        if (filename == null || filename.isBlank()) {
+            ctx.writeAndFlush("Ошибка: имя файла не указано");
+            return;
+        }
 
-private void handleLoad(ChannelHandlerContext ctx, Message message) {
-    String filename = message.params.get("filename");
-    if (filename == null || filename.isBlank()) {
-        ctx.writeAndFlush("Ошибка: имя файла не указано");
-        return;
-    }
-
-    try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(filename))) {
-        topics.clear();
-        votes.clear();
-        topics.putAll((Map<String, List<String>>) in.readObject());
-        votes.putAll((Map<String, List<String>>) in.readObject());
-        ctx.writeAndFlush("Данные успешно загружены из файла: " + filename);
-        logger.info("Данные загружены из файла: " + filename);
-    } catch (IOException | ClassNotFoundException e) {
-        ctx.writeAndFlush("Ошибка при загрузке данных: " + e.getMessage());
-        logger.severe("Ошибка при загрузке данных: " + e.getMessage());
+        try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(filename))) {
+            Map<String, List<String>> loadedTopics = (Map<String, List<String>>) in.readObject();
+            Map<String, Map<String, Integer>> loadedVotes = (Map<String, Map<String, Integer>>) in.readObject();
+            topics.clear();
+            votesMap.clear();
+            topics.putAll(loadedTopics);
+            votesMap.putAll(loadedVotes);
+            ctx.writeAndFlush("Данные успешно загружены из файла: " + filename);
+            logger.info("Данные загружены из файла: " + filename);
+        } catch (IOException | ClassNotFoundException e) {
+            ctx.writeAndFlush("Ошибка при загрузке данных: " + e.getMessage());
+            logger.severe("Ошибка при загрузке данных: " + e.getMessage());
+        }
     }
 }
